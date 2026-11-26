@@ -1,27 +1,34 @@
-# EV Battery State-of-Charge (SoC) Estimation: Physics (EKF) vs. Deep Learning & ONNX Edge Deployment
+# EV Battery State-of-Charge (SoC) Estimation: Hybrid Physics-AI (EKF + Residual TCN) & ONNX Edge Deployment
 
-An end-to-end Battery Management System (BMS) telemetry benchmark comparing classical physics-based estimation (**Extended Kalman Filter**) against tabular ML and sequential deep learning (**PyTorch LSTM** & **1D-CNN**) across temperatures (**-10°C to +25°C**) and battery aging (**80% SoH**), with **Monte Carlo Dropout** uncertainty quantification and **ONNX Runtime** CPU latency profiling.
+An end-to-end Battery Management System (BMS) benchmark comparing classical physics-based estimation (**Extended Kalman Filter**), tabular ML, pure deep learning (**PyTorch LSTM** & **1D-CNN**), and a **Hybrid Physics-Informed Residual Dilated TCN** across temperatures (**-10°C to +25°C**) and battery aging (**80% SoH**), with **Monte Carlo Dropout** uncertainty quantification and **ONNX Runtime** CPU latency profiling.
 
 ---
 
 ## Engineering Motivation
 
-Under dynamic acceleration and regenerative braking, Li-ion terminal voltage ($V_{\text{term}}$) diverges from Open-Circuit Voltage ($\text{OCV}$) due to temperature- and SoC-dependent internal resistance ($R_0$) and RC polarization ($V_{RC}$):
+Under dynamic acceleration and regenerative braking, Li-ion terminal voltage ($V_{\text{term}}$) diverges from Open-Circuit Voltage ($\text{OCV}$) due to temperature- and SoC-dependent ohmic resistance ($R_0$) and RC polarization ($V_{RC}$):
 
 $$V_{\text{term}}(t) = \text{OCV}(\text{SoC}(t)) - I(t) \cdot R_0(T, \text{SoC}) - V_{RC}(t)$$
 
-While a nominal **Extended Kalman Filter (EKF)** excels on a brand-new cell, real-world EV packs experience capacity fade and impedance growth over time. This benchmark explicitly evaluates how each method degrades under an unseen **80% State-of-Health (SoH)** stress test (+35% internal resistance, -20% capacity, and sensor bias).
+A nominal **Extended Kalman Filter (EKF)** achieves near-zero error on a brand-new cell (`0.032% MAE`), but real-world EV packs experience capacity fade and impedance growth. Under an unseen **80% State-of-Health (SoH)** stress test (+35% internal resistance, -20% capacity, and current sensor bias), nominal EKF error degrades to `4.868% MAE`.
+
+To combine the physical stability of EKF with the adaptability of deep learning, this project implements a **Hybrid Residual Physics-AI architecture**:
+
+$$\widehat{\text{SoC}}_{\text{hybrid}}(t) = \text{SoC}_{\text{EKF}}(t) + f_{\theta}\big(V, I, T, R_{\text{est}}, \text{SoC}_{\text{EKF}}, V_{\text{innovation}}\big)$$
+
+Instead of predicting SoC from scratch, a Dilated 1D-CNN (TCN) takes strictly causal online impedance estimates ($R_{\text{est}} = -\Delta V / \Delta I$ during load transients) and EKF voltage innovations ($V_{\text{meas}} - V_{\text{pred}}$) to correct physics mismatch in real time.
 
 ---
 
 ## Architecture & Pipeline
 
-- `src/generate_battery_data.py` — 1st-order Thevenin Equivalent Circuit Model (ECM) simulating 12 urban, highway, and mixed drive cycles (34,516 telemetry rows) from `-10°C` to `25°C`, including healthy (100% SoH), moderately aged (90% SoH), and unseen degraded (80% SoH) cells.
-- `src/ekf.py` — Analytical Extended Kalman Filter baseline using nominal cell parameters and realistic initial SoC offset (`90%`).
-- `src/models.py` — Two PyTorch sequential architectures:
-  - **SoCLSTM:** 2-layer LSTM with a Dropout regression head supporting **Monte Carlo Dropout** (95% confidence bands).
-  - **SoC1DCNN:** Lightweight Temporal 1D-CNN designed for low-latency embedded BMS inference.
-- `src/train_and_evaluate.py` — Physics-informed rolling feature engineering (`15s`, `60s`, `180s`), GPU training (Huber Loss + Cosine Annealing), 5-model evaluation, ONNX export, and CPU latency benchmarking.
+- `src/generate_battery_data.py` — 1st-order Thevenin Equivalent Circuit Model (ECM) simulating 16 dynamic drive cycles (44,193 telemetry rows) from `-10°C` to `25°C`, trained on `85%–100% SoH` cells and evaluated on unseen healthy cycles plus an extrapolated `80% SoH` degraded cell.
+- `src/ekf.py` — Strictly causal Extended Kalman Filter outputting nominal SoC estimates and voltage innovation signals.
+- `src/models.py` — Three PyTorch sequential architectures:
+  - **SoCLSTM:** 2-layer LSTM baseline.
+  - **SoC1DCNN:** Lightweight Temporal 1D-CNN for embedded inference.
+  - **HybridResidualTCN:** Dilated 1D-CNN (`dilations = 1, 2, 4, 8`, `60s` window covering low-temperature RC relaxation $\tau = R_1 C_1$) with **Monte Carlo Dropout** for 95% confidence bands.
+- `src/train_and_evaluate.py` — Causal online impedance ($R_{\text{est}}$) and rolling window feature engineering (`15s`, `60s`, `180s`), GPU training (Huber Loss + Cosine Annealing), 6-model evaluation, ONNX export, and CPU latency benchmarking.
 
 ---
 
@@ -29,22 +36,24 @@ While a nominal **Extended Kalman Filter (EKF)** excels on a brand-new cell, rea
 
 | Model | All Cycles MAE (%) | Healthy 100% SoH MAE (%) | Aged 80% SoH MAE (%) | RMSE (%) | $R^2$ |
 | :--- | :---: | :---: | :---: | :---: | :---: |
-| **Extended Kalman Filter (Physics)** | **0.985** | **0.033** | 4.921 | 2.211 | 0.99052 |
-| **Ridge Regression (Linear)** | 1.683 | 1.401 | 2.846 | 2.037 | 0.99195 |
-| **HistGradientBoosting (Tabular)** | 2.617 | 2.374 | 3.623 | 3.601 | 0.97485 |
-| **PyTorch 1D-CNN (Edge DL)** | 1.181 | 0.788 | 2.807 | 1.568 | 0.99523 |
-| **PyTorch LSTM (Sequential DL)** | 1.270 | 1.007 | **2.358** | **1.548** | **0.99535** |
+| **Extended Kalman Filter (Physics)** | 0.970 | **0.032** | 4.868 | 2.176 | 0.99064 |
+| **Ridge Regression (Linear)** | 1.992 | 2.124 | 1.444 | 2.332 | 0.98925 |
+| **HistGradientBoosting (Tabular)** | 2.066 | 2.036 | 2.190 | 2.568 | 0.98696 |
+| **PyTorch LSTM (Sequential DL)** | 1.333 | 1.347 | 1.272 | 1.607 | 0.99490 |
+| **PyTorch 1D-CNN (Edge DL)** | 0.894 | 0.929 | 0.749 | 1.116 | 0.99754 |
+| **Hybrid EKF + Residual TCN (Physics-AI)** | **0.280** | 0.214 | **0.550** | **0.462** | **0.99958** |
 
 ### Key Takeaways
-1. **Aging Robustness:** When cell parameters drift at 80% SoH, nominal EKF error jumps from `0.033%` to `4.921%` MAE. The **PyTorch LSTM** cuts aged-cell error by **>52%** (`2.358%` MAE) and delivers the lowest overall RMSE (`1.548%`).
-2. **Real-Time Edge Performance (ONNX Runtime CPU, Batch Size = 1):**
+1. **Aging Extrapolation:** On the unseen `80% SoH` stress test, **Hybrid EKF + Residual TCN** reduces MAE by **88.7%** compared to nominal EKF (`4.868%` → `0.550%`) while preserving sub-0.25% accuracy on healthy packs (`0.214%`).
+2. **Real-Time Edge Performance (ONNX Runtime CPU, Batch Size = 1, SeqLen = 60):**
 
 | Exported ONNX Model | Latency (ms/sample) | Throughput (Hz) | Model Size (KB) |
 | :--- | :---: | :---: | :---: |
-| `models/soc_lstm.onnx` | 0.162 ms | 6,154 Hz | 221.9 KB |
-| `models/soc_1dcnn.onnx` | **0.069 ms** | **14,536 Hz** | **110.7 KB** |
+| `models/soc_lstm.onnx` | 0.212 ms | 4,727 Hz | 222.9 KB |
+| `models/soc_1dcnn.onnx` | **0.088 ms** | **11,330 Hz** | **111.3 KB** |
+| `models/soc_hybrid_tcn.onnx` | 0.105 ms | 9,518 Hz | 132.7 KB |
 
-Both models exceed standard automotive BMS sampling rates (10–100 Hz) by orders of magnitude on CPU, with **1D-CNN** running **2.3× faster** at half the memory footprint.
+The hybrid residual TCN runs **2× faster than LSTM** at **~9.5 kHz** on a single CPU thread (exceeding typical 10–100 Hz BMS sampling rates by two orders of magnitude).
 
 ---
 

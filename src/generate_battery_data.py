@@ -68,8 +68,8 @@ def simulate_drive_cycle(
     temp[0] = ambient_temp_c
     v_rc = 0.0
 
-    # Slight current sensor bias on aged packs to test robustness
-    current_bias = rng.normal(0, 0.03) if soh < 0.9 else 0.0
+    # Realistic current sensor bias on aged packs
+    current_bias = rng.normal(0, 0.03) if soh < 0.92 else 0.0
 
     valid_steps = max_steps
     for k in range(max_steps):
@@ -113,7 +113,7 @@ def simulate_drive_cycle(
 def main():
     os.makedirs("data", exist_ok=True)
     configs = [
-        # Training cycles: healthy (100% SoH) + moderately aged (90% SoH)
+        # Training cycles spanning temperatures (-10C to 25C) and aging (85% to 100% SoH)
         (1, 25.0, "urban", 1.00, "train"),
         (2, 25.0, "highway", 1.00, "train"),
         (3, 10.0, "urban", 1.00, "train"),
@@ -122,11 +122,15 @@ def main():
         (6, 0.0, "highway", 0.90, "train"),
         (7, -10.0, "mixed", 1.00, "train"),
         (8, 25.0, "mixed", 0.90, "train"),
-        # Unseen test cycles: healthy across temperatures + 80% SoH aged stress test
+        (13, 25.0, "urban", 0.85, "train"),
+        (14, 10.0, "highway", 0.85, "train"),
+        (15, 0.0, "mixed", 0.85, "train"),
+        (16, -10.0, "urban", 0.92, "train"),
+        # Exact same 4 unseen test cycles (including 80% SoH extrapolation stress test)
         (9, 25.0, "mixed", 1.00, "test"),
         (10, 0.0, "mixed", 1.00, "test"),
         (11, -10.0, "urban", 1.00, "test"),
-        (12, 10.0, "mixed", 0.80, "test"),  # Aged 80% SoH stress test
+        (12, 10.0, "mixed", 0.80, "test"),
     ]
 
     dfs = []
@@ -138,7 +142,7 @@ def main():
     full_df = pd.concat(dfs, ignore_index=True)
     out_path = os.path.join("data", "battery_drive_cycles.csv")
     full_df.to_csv(out_path, index=False)
-    print(f"[OK] Saved {len(full_df):,} telemetry rows ({len(configs)} cycles, including 80% SoH stress test) to {out_path}")
+    print(f"[OK] Saved {len(full_df):,} telemetry rows ({len(configs)} cycles, 85%-100% train + 80% SoH test) to {out_path}")
 
 
 if __name__ == "__main__":
