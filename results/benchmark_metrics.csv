@@ -1,0 +1,6 @@
+Model,All MAE (%),Healthy MAE (%),Aged 80% SoH MAE (%),RMSE (%),R2
+Extended Kalman Filter (Physics),0.985,0.033,4.921,2.211,0.99052
+Ridge Regression (Linear),1.683,1.401,2.846,2.037,0.99195
+HistGradientBoosting (Tabular),2.617,2.374,3.623,3.601,0.97485
+PyTorch 1D-CNN (Edge DL),1.181,0.788,2.807,1.568,0.99523
+PyTorch LSTM (Sequential DL),1.27,1.007,2.358,1.548,0.99535
